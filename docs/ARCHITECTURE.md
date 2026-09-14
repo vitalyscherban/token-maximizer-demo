@@ -3,6 +3,10 @@
 This document is written for two audiences: engineers who will copy the pattern,
 and clients who want to understand why the pattern is shaped this way.
 
+It explains *why*. For the full diagram set see [DIAGRAMS.md](DIAGRAMS.md), for
+the file-by-file map see [MODULES.md](MODULES.md), for endpoints see
+[API.md](API.md), and for every knob see [CONFIGURATION.md](CONFIGURATION.md).
+
 ---
 
 ## 1. The core idea
@@ -15,6 +19,17 @@ until the invoice arrives.
 
 So the architecture treats **context assembly as the primary subsystem** and the
 model call as a leaf operation.
+
+```mermaid
+flowchart TB
+    subgraph primary["The primary subsystem — context assembly"]
+        direction LR
+        s["two stores"] --> b["budget"] --> c["compaction"] --> p["pruning"] --> r["routing + slimming"] --> k["cache"]
+    end
+    primary --> leaf["provider.complete()<br/><i>a leaf operation</i>"]
+    leaf --> l[("ledger:<br/>optimized vs. baseline")]
+    primary --> l
+```
 
 ---
 
@@ -37,11 +52,30 @@ Because the two are separate, lossy optimisation is *safe*. You can compact a
 in turn 3?" from the transcript. Systems that optimise a single store in place
 cannot do this, and that is why their teams are afraid to turn optimisation on.
 
+```mermaid
+flowchart LR
+    msg["every Message"] --> t["<b>transcript</b><br/>append-only"]
+    msg --> w["<b>store</b><br/>working context"]
+    t --> baseline["baseline cost<br/>(the counterfactual)"]
+    t --> audit["/transcript endpoint<br/>(the audit trail)"]
+    w --> compact["compact()"] --> prune["prune()"] --> sent["what is actually sent"]
+```
+
 ---
 
 ## 3. The pipeline order matters
 
 `compact → prune → route → slim → cache → call`
+
+```mermaid
+flowchart LR
+    c["<b>compact</b><br/>convert old history"] --> p["<b>prune</b><br/>delete what is left over"]
+    p --> r["<b>route</b><br/>pick the tools"] --> s["<b>slim</b><br/>shrink those schemas"]
+    s --> k["<b>cache</b><br/>key on the final prompt"] --> m["<b>call</b>"]
+    c -. "convert before you delete" .-> p
+    r -. "no point slimming what you would not send" .-> s
+    s -. "key must cover exactly what is sent" .-> k
+```
 
 - **Compaction before pruning.** Compaction converts old history into a cheaper
   representation. Pruning deletes. Always try to convert before you delete —
@@ -63,6 +97,13 @@ prompt_allowance  = context_window - reserved_output
 history_allowance = prompt_allowance - system_tokens - tool_schema_tokens
 ```
 
+```mermaid
+flowchart LR
+    cw["context_window"] --> ro["− reserved_output"] --> pa["= prompt_allowance"]
+    pa --> st["− system_tokens<br/>(system + pinned)"] --> ts["− tool_schema_tokens<br/>(routed, slimmed)"] --> ha["<b>= history_allowance</b>"]
+    ha --> ct["× compaction_trigger (0.6)<br/>= compaction fires here"]
+```
+
 `history_allowance` is the only budget that pruning is allowed to spend. Fixed
 costs (the system prompt, the tool schemas, the reserved output) are subtracted
 first, so the agent can never be surprised by an overflow it caused itself.
@@ -81,6 +122,15 @@ Retention is tiered, in this order:
 2. **The protected recent window.** The last N turns, regardless of relevance —
    conversational coherence is not negotiable.
 3. **Everything else**, ranked by `relevance(query) + recency * 0.5`.
+
+```mermaid
+flowchart TB
+    t1["<b>1. Pinned + system</b><br/>system prompt, active user goal<br/><i>never dropped</i>"]
+    t2["<b>2. Protected recent window</b><br/>last N turns, regardless of relevance<br/><i>coherence is not negotiable</i>"]
+    t3["<b>3. Everything else</b><br/>ranked by relevance + recency × 0.5<br/><i>dropped lowest-first until it fits</i>"]
+    t1 --> t2 --> t3
+    t3 --> floor["hard floor: stop when only<br/>protected groups remain,<br/>even if still over budget"]
+```
 
 Relevance is deliberately a cheap lexical overlap, not an embedding call.
 Spending a model call to decide what to drop from a model call is a trap; the

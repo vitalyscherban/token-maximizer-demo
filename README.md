@@ -83,34 +83,48 @@ off mid-demo and re-run to show its individual cost.
 
 ## Architecture in one picture
 
-```
-POST /api/chat
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ TokenEfficientAgent.run()                                   │
-│                                                             │
-│  transcript  (full fidelity, never pruned — audit+baseline) │
-│  store       (working context — what actually gets sent)    │
-│                                                             │
-│  per step:                                                  │
-│    1. compact    old turns  → memo                          │
-│    2. prune      low-relevance turns → fit history budget   │
-│    3. route      query → relevant tools only                │
-│    4. slim       tool schemas → drop prose                  │
-│    5. cache      normalised lookup → maybe skip the model   │
-│    6. call       provider.complete(messages, schemas)       │
-│    7. tool       execute → truncate result → feed back      │
-│    8. ledger     record optimized vs. baseline              │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    req["POST /api/chat"] --> loop
+
+    subgraph loop["TokenEfficientAgent.run()"]
+        direction TB
+        stores["<b>transcript</b> — full fidelity, never pruned (audit + baseline)<br/><b>store</b> — working context, what actually gets sent"]
+        s1["1. compact &nbsp;&nbsp;old turns → memo"]
+        s2["2. prune &nbsp;&nbsp;&nbsp;&nbsp;low-relevance turns → fit history budget"]
+        s3["3. route &nbsp;&nbsp;&nbsp;&nbsp;query → relevant tools only"]
+        s4["4. slim &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tool schemas → drop prose"]
+        s5["5. cache &nbsp;&nbsp;&nbsp;&nbsp;normalised lookup → maybe skip the model"]
+        s6["6. call &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;provider.complete(messages, schemas)"]
+        s7["7. tool &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;execute → truncate result → feed back"]
+        s8["8. ledger &nbsp;&nbsp;record optimized vs. baseline"]
+        stores --> s1 --> s2 --> s3 --> s4 --> s5 --> s6 --> s7 --> s8
+        s7 -. "next step" .-> s1
+    end
+
+    loop --> resp["answer + steps + measured savings"]
 ```
 
 The single most important design decision: **the stored transcript and the sent
 prompt are different objects.** Compaction and pruning are lossy operations on a
 *derived view*, so they can be aggressive without ever destroying user data.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design rationale and the
-walkthrough script for client sessions.
+Full diagram set — system context, components, sequence, budget arithmetic,
+pruning tiers, cache, ledger, data model — in
+[docs/DIAGRAMS.md](docs/DIAGRAMS.md).
+
+---
+
+## Documentation
+
+| Document | For |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design rationale and the client walkthrough script |
+| [docs/DIAGRAMS.md](docs/DIAGRAMS.md) | Thirteen diagrams covering every subsystem |
+| [docs/MODULES.md](docs/MODULES.md) | File-by-file code map |
+| [docs/API.md](docs/API.md) | HTTP reference with request/response shapes |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every `TOKENMAX_*` setting and how to tune it |
+
 
 ---
 
@@ -127,6 +141,7 @@ src/tokenmax/
   tokens.py              counting & middle-out truncation
   api/                   FastAPI routes + console dashboard
 demo/run_demo.py         console walkthrough with ablation
+docs/                    architecture, diagrams, module map, API, config
 tests/                   51 tests, no network
 ```
 
@@ -142,6 +157,8 @@ tests/                   51 tests, no network
 | GET | `/api/sessions/{id}/transcript` | full transcript vs. working context |
 | GET | `/api/sessions` | sessions + cross-session totals |
 | DELETE | `/api/sessions/{id}` | drop a session |
+
+Request and response shapes in [docs/API.md](docs/API.md).
 
 ## Notes on honesty
 
